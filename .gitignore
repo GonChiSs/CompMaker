@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Local test/runtime temp
+.test_tmp/
+.compmaker_cache/
+pytest-cache-files-*/
+
+# Build artifacts
+build/
+build_release/
+dist/
+dist_release/
+installer_output/
+Installer/
+*.spec.bak
+
+# Audit/generated reports
+lol_comp_builder/audit/*.json
+
+# Generated previews / local exports
+lol_comp_builder/pizarra_*preview*.png
+lol_comp_builder/pizarra_final_check.png
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
