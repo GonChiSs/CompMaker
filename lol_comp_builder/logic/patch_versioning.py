@@ -6,9 +6,17 @@ from pathlib import Path
 
 import requests
 
-DDRAGON_FALLBACK_VERSION = "16.11.1"
+DDRAGON_FALLBACK_VERSION = "16.12.1"
 VERSIONS_URL = "https://ddragon.leagueoflegends.com/api/versions.json"
 REQUEST_TIMEOUT = 8
+
+
+def _http_get_json(url: str) -> dict | list:
+    session = requests.Session()
+    session.trust_env = False
+    response = session.get(url, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    return response.json()
 
 
 def _normalize_patch(value: str | None) -> str:
@@ -20,9 +28,7 @@ def _normalize_patch(value: str | None) -> str:
 @lru_cache(maxsize=1)
 def get_current_patch() -> str:
     try:
-        response = requests.get(VERSIONS_URL, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-        payload = response.json()
+        payload = _http_get_json(VERSIONS_URL)
         if payload:
             return _normalize_patch(payload[0])
     except Exception:

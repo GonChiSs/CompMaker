@@ -20,11 +20,16 @@ from logic.saved_compositions import save_composition
 from logic.synergy_engine import SynergyEngine
 from ui.archetype_cards import ArchetypeCards
 from ui.champion_picker import ChampionPicker
+from ui.data_admin_dialogs import ChampionRoleEditorDialog
+from ui.data_admin_dialogs import ChampionTagEditorDialog
+from ui.data_admin_dialogs import DataToolsHubDialog
+from ui.data_admin_dialogs import TagCatalogDialog
 from ui.draft_board import DraftBoard, SaveCompoDialog
 from ui.draft_mode.draft_screen import DraftScreen
 from ui.draft_mode.side_selection import SideSelectionScreen
 from ui.mode_selector import ModeSelector
 from ui.matchup_mode import MatchupMode
+from ui.itemizar_mode import ItemizarMode
 from ui.pizarra_mode import PizarraMode
 from ui.random_champ import RandomChampWidget
 from ui.saved_mode import SavedMode
@@ -67,6 +72,7 @@ class MainWindow(QMainWindow):
         self.mode_selector.mode_changed.connect(self._switch_mode)
         self.help_button = QPushButton("?")
         self.help_button.setFixedSize(28, 28)
+        self.help_button.setToolTip("Herramientas de tags y roles")
         self.help_button.setStyleSheet(
             """
             QPushButton {
@@ -85,14 +91,15 @@ class MainWindow(QMainWindow):
             }
             """
         )
-        self.help_button.clicked.connect(self._show_help)
+        self.help_button.clicked.connect(self._open_data_tools)
 
         header = QHBoxLayout()
         title = QLabel("CompMaker")
         title.setObjectName("TitleLabel")
         title.setText("COMPMAKER")
-        title_font = QFont("Barlow Condensed", 22, QFont.Weight.ExtraBold)
-        title_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.0)
+        title_font = QFont("Cinzel", 24, QFont.Weight.Bold)
+        title_font.setStyleHint(QFont.StyleHint.Serif)
+        title_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.2)
         title.setFont(title_font)
         header.addWidget(title)
         header.addStretch()
@@ -194,6 +201,11 @@ class MainWindow(QMainWindow):
         self.tierlist_mode = TierlistMode(self.champion_pool, self.champion_images)
         self.matchup_mode = MatchupMode(self.champion_pool, self.champion_images)
         self.pizarra_mode = PizarraMode(self.champion_pool, self.champion_images)
+        self.itemizar_mode = ItemizarMode(
+            self.champion_pool,
+            self.data_loader,
+            data_meta=data_bundle.get("data_meta", {}),
+        )
 
         self.draft_container = QStackedWidget()
         self.side_selection_screen = SideSelectionScreen()
@@ -210,6 +222,7 @@ class MainWindow(QMainWindow):
         self.mode_stack.addWidget(self.tierlist_mode)
         self.mode_stack.addWidget(self.pizarra_mode)
         self.mode_stack.addWidget(self.matchup_mode)
+        self.mode_stack.addWidget(self.itemizar_mode)
 
         self.synergy_panel = SynergyPanel()
         self.synergy_panel.setFixedWidth(320)
@@ -257,6 +270,10 @@ class MainWindow(QMainWindow):
             self.mode_stack.setCurrentIndex(6)
             self.synergy_panel.setVisible(False)
             self.pizarra_mode.setFocus()
+        elif mode == "ITEMIZAR":
+            self.mode_stack.setCurrentIndex(8)
+            self.synergy_panel.setVisible(False)
+            self.itemizar_mode.on_mode_entered()
         else:
             return
         self._refresh_all()
@@ -464,29 +481,80 @@ class MainWindow(QMainWindow):
     def _update_save_button_state(self) -> None:
         self.save_comp_button.setEnabled(len(self.state.selected_champions()) >= 2)
 
-    def _show_help(self) -> None:
+    def _open_data_tools(self) -> None:
+        action = DataToolsHubDialog.get_action(parent=self)
+        if action == "tag_list":
+            TagCatalogDialog(self.data_loader.get_tag_catalog(), parent=self).exec()
+        elif action == "tag_edit":
+            updates = ChampionTagEditorDialog.edit(self.champion_pool, parent=self)
+            if updates is not None:
+                changed = 0
+                for champion_name, ability_tags, tags in updates:
+                    updated = self.data_loader.update_champion_configuration(
+                        champion_name,
+                        ability_tags=ability_tags,
+                        tags=tags,
+                    )
+                    self._merge_champion_record(champion_name, updated)
+                    changed += 1
+                self._after_champion_data_edit(changed, "tags")
+        elif action == "role_edit":
+            updates = ChampionRoleEditorDialog.edit(self.champion_pool, parent=self)
+            if updates is not None:
+                changed = 0
+                for champion_name, roles in updates:
+                    updated = self.data_loader.update_champion_configuration(
+                        champion_name,
+                        roles=roles,
+                    )
+                    self._merge_champion_record(champion_name, updated)
+                    changed += 1
+                self._after_champion_data_edit(changed, "roles")
+
+    def _merge_champion_record(self, champion_name: str, updated: dict) -> None:
+        current = self.champion_pool.get(champion_name)
+        if isinstance(current, dict):
+            current.clear()
+            current.update(updated)
+        else:
+            self.champion_pool[champion_name] = updated
+
+        if self.current_draft_screen is not None:
+            self._sync_draft_state_record_list(self.current_draft_screen.state.blue_bans)
+            self._sync_draft_state_record_list(self.current_draft_screen.state.red_bans)
+            self._sync_draft_state_record_list(self.current_draft_screen.state.blue_picks)
+            self._sync_draft_state_record_list(self.current_draft_screen.state.red_picks)
+            hovered = self.current_draft_screen.state.hovered_champion
+            if hovered and hovered.get("name") == champion_name:
+                hovered.clear()
+                hovered.update(updated)
+
+    def _sync_draft_state_record_list(self, records: list[dict]) -> None:
+        for record in records:
+            name = record.get("name")
+            if not name or name not in self.champion_pool:
+                continue
+            assigned_role = record.get("assigned_role")
+            refreshed = dict(self.champion_pool[name])
+            if assigned_role:
+                refreshed["assigned_role"] = assigned_role
+            record.clear()
+            record.update(refreshed)
+
+    def _after_champion_data_edit(self, changed: int, subject: str) -> None:
+        if changed <= 0:
+            return
+        self.engine = SynergyEngine(self.champion_pool)
+        self.generator_pools.clear()
+        self.generator_pool_indexes.clear()
+        self._refresh_all()
+        if self.current_draft_screen is not None:
+            self.current_draft_screen._refresh_everything()
+        self.saved_mode.refresh()
         QMessageBox.information(
             self,
-            "Ayuda de modos",
-            (
-                "Modo 1 - Asistente de Draft:\n"
-                "Haz clic en un rol, elige un campeon y revisa las sugerencias inteligentes.\n\n"
-                "Modo 2 - Generador de Compo:\n"
-                "Selecciona un arquetipo para autogenerar una composicion completa con roles e iconos.\n\n"
-                "Modo 3 - Random Champ:\n"
-                "Pulsa volver a tirar para sacar un campeon aleatorio de toda la lista.\n\n"
-                "Modo 4 - Simulador de Draft:\n"
-                "Elige lado, juega bans y picks por turnos y usa las recomendaciones en vivo.\n\n"
-                "Modo 5 - Guardadas:\n"
-                "Revisa, renombra, elimina o carga tus composiciones guardadas.\n\n"
-                "Modo 6 - Tierlist:\n"
-                "Arrastra campeones a tiers S-A-B-C-D-F, exporta y usa auto-rank por rol.\n\n"
-                "Modo 7 - Pizarra:\n"
-                "Carga equipos, coloca fichas sobre el mapa y dibuja rutas, zonas, wards y pings.\n\n"
-                "Modo 8 - Matchup:\n"
-                "Elige rol, enemigo y revisa counters y build sugeridos en vivo.\n\n"
-                "Tip: clic derecho en una casilla para quitar un campeon."
-            ),
+            "Cambios aplicados",
+            f"Se han actualizado los {subject} y ya afectan a toda la app.",
         )
 
     def _reset_mode1_score_state(self) -> None:

@@ -146,7 +146,7 @@ class SynergyPanel(QFrame):
         self.tip_label.hide()
         self.worst_pair_label.hide()
         self.patch_label.show()
-        self.score_meta_label.show()
+        self.score_meta_label.hide()
         self.curve_title.show()
         self.curve_widget.show()
 
@@ -167,9 +167,6 @@ class SynergyPanel(QFrame):
         self.worst_pair_label.setText("Peor duo: aun no disponible")
         raw_total = float(analysis.get("raw_total_score", analysis.get("total_score", 0.0)))
         adjusted_raw = float(analysis.get("adjusted_raw_score", analysis.get("total_score", 0.0)))
-        self.score_meta_label.setText(
-            f"RAW {raw_total:.1f} -> AJUSTADO {adjusted_raw:.1f} | modo 1 puro"
-        )
         self._render_curve(analysis.get("curve", {}))
 
     def update_mode2(self, analysis: dict) -> None:

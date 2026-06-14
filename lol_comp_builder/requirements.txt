@@ -5,3 +5,4 @@ requests>=2.31.0
 Pillow>=10.0.0
 beautifulsoup4>=4.12.0
 PyInstaller>=6.0.0
+# ITEMIZAR no requiere dependencias extra: reutiliza requests + PyQt6 ya presentes.

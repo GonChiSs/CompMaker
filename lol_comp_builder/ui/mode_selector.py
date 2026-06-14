@@ -12,6 +12,7 @@ MODE_BUTTONS = [
     ("06", "TIERLIST"),
     ("07", "PIZARRA"),
     ("08", "MATCHUP"),
+    ("09", "ITEMIZAR"),
 ]
 
 

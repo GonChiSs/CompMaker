@@ -9,6 +9,9 @@ __pycache__/
 .test_tmp/
 .compmaker_cache/
 pytest-cache-files-*/
+tmp_*.json
+tmp_*.png
+lol_comp_builder/tmp_test_patch_context_*/
 
 # Build artifacts
 build/
@@ -16,8 +19,11 @@ build_release/
 dist/
 dist_release/
 installer_output/
-Installer/
 *.spec.bak
+
+# Runtime data caches
+lol_comp_builder/data/context_cache/
+lol_comp_builder/data/ddragon_cache/
 
 # Audit/generated reports
 lol_comp_builder/audit/*.json
@@ -25,6 +31,7 @@ lol_comp_builder/audit/*.json
 # Generated previews / local exports
 lol_comp_builder/pizarra_*preview*.png
 lol_comp_builder/pizarra_final_check.png
+lol_comp_builder/assets/title_font_preview.png
 
 # OS / editor noise
 .DS_Store

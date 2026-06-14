@@ -33,6 +33,7 @@ class PizarraMode(QWidget):
         self.board_states: dict[int, dict] = {}
         self.blue_team: list[str] = []
         self.red_team: list[str] = []
+        self._copy_button_default_text = "[]  COPIAR"
         self._build_ui()
         self._load_all_boards()
         app = QApplication.instance()
@@ -188,6 +189,31 @@ class PizarraMode(QWidget):
         )
         clear_btn.clicked.connect(self._clear_all)
         layout.addWidget(clear_btn)
+
+        self.copy_btn = QPushButton(self._copy_button_default_text)
+        self.copy_btn.setFixedHeight(26)
+        self.copy_btn.setStyleSheet(
+            """
+            QPushButton {
+                background-color: transparent;
+                border: 1px solid #C9A84C55;
+                border-radius: 2px;
+                color: #C9A84C;
+                font-family: 'Barlow Condensed', 'Arial Narrow', Arial;
+                font-size: 9px;
+                font-weight: 700;
+                letter-spacing: 2px;
+                padding: 0 12px;
+            }
+            QPushButton:hover {
+                border-color: #C9A84C;
+                color: #FFF2C4;
+                background-color: #151005;
+            }
+            """
+        )
+        self.copy_btn.clicked.connect(self._copy_current_board)
+        layout.addWidget(self.copy_btn)
 
         return layout
 
@@ -348,7 +374,11 @@ class PizarraMode(QWidget):
                 for shape in canvas.shapes
             ],
             "wards": [
-                {"pos": [ward["pos"].x(), ward["pos"].y()], "team": ward["team"]}
+                {
+                    "pos": [ward["pos"].x(), ward["pos"].y()],
+                    "team": ward.get("team", "BLUE"),
+                    "color": ward.get("color", QColor("#00D4FF")).name(),
+                }
                 for ward in canvas.wards
             ],
             "tokens": [
@@ -429,6 +459,7 @@ class PizarraMode(QWidget):
                 {
                     "pos": QPoint(pos[0], pos[1]),
                     "team": ward.get("team", "BLUE"),
+                    "color": QColor(ward.get("color", "#00D4FF")),
                 }
             )
 
@@ -453,6 +484,11 @@ class PizarraMode(QWidget):
 
     def save_before_close(self) -> None:
         self._save_current_board()
+
+    def _copy_current_board(self) -> None:
+        copied = self.map_area.copy_snapshot_to_clipboard()
+        self.copy_btn.setText("[OK]  COPIADO" if copied else "[!]  ERROR")
+        QTimer.singleShot(1400, lambda: self.copy_btn.setText(self._copy_button_default_text))
 
 
 class MapCanvas(QWidget):
@@ -618,7 +654,7 @@ class MapCanvas(QWidget):
             self._erase_near(pos)
         elif self.current_tool == self.TOOL_WARD:
             team = "BLUE" if event.button() == Qt.MouseButton.LeftButton else "RED"
-            self.wards.append({"pos": pos, "team": team})
+            self.wards.append({"pos": pos, "team": team, "color": QColor(self.current_color)})
             self.update()
         elif self.current_tool == self.TOOL_PING:
             self.pings.append({"pos": pos, "color": QColor(self.current_color), "born": QTime.currentTime()})
@@ -703,6 +739,32 @@ class MapCanvas(QWidget):
             self.pings.pop()
         self.update()
 
+    def capture_board_snapshot(self) -> QPixmap:
+        hidden_widgets: list[QWidget] = []
+        for overlay in (self.left_toolbar, self.right_toolbar):
+            if overlay.isVisible():
+                overlay.hide()
+                hidden_widgets.append(overlay)
+
+        QApplication.processEvents()
+        snapshot = self.grab()
+
+        for overlay in hidden_widgets:
+            overlay.show()
+            overlay.raise_()
+        QApplication.processEvents()
+        return snapshot
+
+    def copy_snapshot_to_clipboard(self) -> bool:
+        snapshot = self.capture_board_snapshot()
+        if snapshot.isNull():
+            return False
+        clipboard = QApplication.clipboard()
+        if clipboard is None:
+            return False
+        clipboard.setPixmap(snapshot)
+        return True
+
     def spawn_champion_token(self, name: str, side: str, spawn_pos: QPoint | None = None) -> None:
         spawned_from_panel = spawn_pos is None or spawn_pos == QPoint(0, 0)
         if spawned_from_panel:
@@ -766,7 +828,10 @@ class MapCanvas(QWidget):
 
         for ward in self.wards:
             pos = ward["pos"]
-            color = QColor("#00D4FF") if ward["team"] == "BLUE" else QColor("#FF3B3B")
+            color = ward.get("color")
+            if not isinstance(color, QColor):
+                fallback_team = ward.get("team", "BLUE")
+                color = QColor("#00D4FF") if fallback_team == "BLUE" else QColor("#FF3B3B")
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 40)))
             painter.drawEllipse(pos.x() - 10, pos.y() - 10, 20, 20)
@@ -980,6 +1045,7 @@ class DrawingToolbar(QWidget):
             ("#FF8C00", "Naranja"),
             ("#FFFFFF", "Blanco"),
         ]
+        self.color_swatches: list[ColorSwatch] = []
         for row_idx in range(0, len(colors), 3):
             row_widget = QWidget()
             row_layout = QHBoxLayout(row_widget)
@@ -990,7 +1056,9 @@ class DrawingToolbar(QWidget):
                 swatch.setFixedSize(30, 16)
                 swatch.clicked.connect(lambda c=QColor(hex_color): self._select_color(c))
                 row_layout.addWidget(swatch)
+                self.color_swatches.append(swatch)
             content_layout.addWidget(row_widget)
+        self._refresh_color_swatches()
 
         content_layout.addSpacing(4)
         content_layout.addWidget(self._make_separator())
@@ -1244,7 +1312,12 @@ class DrawingToolbar(QWidget):
 
     def _select_color(self, color: QColor) -> None:
         self.current_color = color
+        self._refresh_color_swatches()
         self.color_changed.emit(color)
+
+    def _refresh_color_swatches(self) -> None:
+        for swatch in getattr(self, "color_swatches", []):
+            swatch.set_selected(swatch.color.name().lower() == self.current_color.name().lower())
 
 
 class ColorSwatch(QWidget):
@@ -1253,6 +1326,7 @@ class ColorSwatch(QWidget):
     def __init__(self, hex_color: str, name: str, parent=None):
         super().__init__(parent)
         self.color = QColor(hex_color)
+        self.selected = False
         self.setToolTip(name)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -1260,11 +1334,21 @@ class ColorSwatch(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setBrush(QBrush(self.color))
-        painter.setPen(QPen(QColor("#0A1E2A"), 1))
-        painter.drawRoundedRect(self.rect().adjusted(2, 2, -2, -2), 2, 2)
+        border = QColor("#F1F7FF") if self.selected else QColor("#0A1E2A")
+        border_width = 2 if self.selected else 1
+        painter.setPen(QPen(border, border_width))
+        outer_rect = self.rect().adjusted(1, 1, -1, -1)
+        painter.drawRoundedRect(outer_rect, 3, 3)
+        if self.selected:
+            painter.setPen(QPen(QColor("#00D4FF"), 1))
+            painter.drawRoundedRect(outer_rect.adjusted(1, 1, -1, -1), 2, 2)
 
     def mousePressEvent(self, event) -> None:
         self.clicked.emit()
+
+    def set_selected(self, selected: bool) -> None:
+        self.selected = selected
+        self.update()
 
 
 class TokenPanel(QWidget):

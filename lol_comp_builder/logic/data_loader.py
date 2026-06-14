@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 import time
+from datetime import date
 from pathlib import Path
 from typing import Callable
 
@@ -14,8 +15,27 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
 
 from logic.patch_versioning import get_current_patch
+from logic.patch_context_store import PatchContextStore
+from logic.item_data_loader import ItemDataLoader
+from logic.rune_data_loader import RuneDataLoader
 
 IMAGE_DOWNLOAD_DELAY_SECONDS = 0.08
+
+
+def _http_get_json(url: str, *, timeout: int = 15) -> dict | list:
+    session = requests.Session()
+    session.trust_env = False
+    response = session.get(url, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
+
+
+def _http_get_bytes(url: str, *, timeout: int = 15) -> bytes:
+    session = requests.Session()
+    session.trust_env = False
+    response = session.get(url, timeout=timeout)
+    response.raise_for_status()
+    return response.content
 
 DEFAULT_ROLE_MAP = {
     "Aatrox": ["TOP"],
@@ -229,17 +249,29 @@ def load_all_champions(base_dir: Path | None = None) -> dict[str, dict]:
     """Carga el dataset principal de campeones para tests y utilidades offline."""
     if base_dir is None:
         base_dir = Path(__file__).resolve().parents[1]
-    data_path = base_dir / "data" / "champions_synergy.json"
+    data_path = _resolve_synergy_path(base_dir)
     _, champions = _load_synergy_payload(data_path)
     for name, payload in champions.items():
         payload.setdefault("name", name)
     return champions
 
 
+def _resolve_synergy_path(base_dir: Path) -> Path:
+    return base_dir if base_dir.is_file() else base_dir / "data" / "champions_synergy.json"
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
 def get_data_meta(base_dir: Path | None = None) -> dict:
     if base_dir is None:
         base_dir = Path(__file__).resolve().parents[1]
-    data_path = base_dir / "data" / "champions_synergy.json"
+    data_path = _resolve_synergy_path(base_dir)
     meta, champions = _load_synergy_payload(data_path)
     patch = meta.get("patch") or "unknown"
     current_patch = get_current_patch()
@@ -268,7 +300,8 @@ class DataLoader:
         self.data_dir = self.cache_root / "data"
         self.assets_dir = self.cache_root / "assets"
         self.images_dir = self.cache_root / "retratos"
-        self.synergy_path = self.bundle_dir / "data" / "champions_synergy.json"
+        self.bundle_synergy_path = self.bundle_dir / "data" / "champions_synergy.json"
+        self.synergy_path = self.data_dir / "champions_synergy.json"
         self.raw_path = self.data_dir / "champions_raw.json"
         self.workspace_logo_path = base_dir.parent / "logo.png"
         self.workspace_inter_path = base_dir.parent / "inter.png"
@@ -280,6 +313,7 @@ class DataLoader:
         self.placeholder_path = self.assets_dir / "placeholder.png"
         try:
             self.data_dir.mkdir(parents=True, exist_ok=True)
+            self.assets_dir.mkdir(parents=True, exist_ok=True)
             self.images_dir.mkdir(parents=True, exist_ok=True)
         except OSError:
             self.cache_root = fallback_cache_root
@@ -290,7 +324,9 @@ class DataLoader:
             self.inter_path = self.assets_dir / "inter.png"
             self.icon_path = self.assets_dir / "icon.ico"
             self.placeholder_path = self.assets_dir / "placeholder.png"
+            self.synergy_path = self.data_dir / "champions_synergy.json"
             self.data_dir.mkdir(parents=True, exist_ok=True)
+            self.assets_dir.mkdir(parents=True, exist_ok=True)
             self.images_dir.mkdir(parents=True, exist_ok=True)
 
     def ensure_app_icon(self) -> Path:
@@ -338,13 +374,18 @@ class DataLoader:
     def prepare_runtime_data(self, progress_callback: Callable[[str, int], None] | None = None) -> dict:
         self.ensure_app_icon()
         self._ensure_placeholder()
+        self._sync_runtime_synergy_file()
         if progress_callback:
             progress_callback("Iniciando CompMaker...", 0)
             progress_callback("Preparando recursos locales...", 5)
             progress_callback("Descargando lista de campeones...", 15)
 
-        remote_payload = self._fetch_remote_champions()
+        current_patch = get_current_patch()
+        remote_payload = self._fetch_remote_champions(current_patch)
         remote_available = remote_payload is not None
+        if remote_available:
+            self._register_new_champions(remote_payload)
+            self._update_runtime_synergy_meta(current_patch)
         remote_data = remote_payload or self._load_cached_raw()
         if not remote_data:
             remote_data = {"data": {}}
@@ -352,6 +393,17 @@ class DataLoader:
         if progress_callback:
             progress_callback("Combinando datos locales y roles...", 35)
         champion_pool = self._merge_champion_data(remote_data)
+
+        try:
+            store = PatchContextStore(
+                self.base_dir,
+                champion_pool,
+                ItemDataLoader(self.base_dir, preferred_patch=current_patch),
+                RuneDataLoader(self.base_dir, preferred_patch=current_patch),
+            )
+            store.ensure_patch_snapshot(current_patch, force_refresh=remote_available)
+        except Exception:
+            pass
 
         if progress_callback:
             progress_callback("Preparando retratos de campeones...", 50)
@@ -365,7 +417,7 @@ class DataLoader:
             "placeholder_path": self.placeholder_path,
             "icon_path": self.icon_path,
             "inter_path": self.inter_path,
-            "data_meta": get_data_meta(self.bundle_dir),
+            "data_meta": get_data_meta(self.synergy_path),
         }
 
     def _ensure_placeholder(self) -> None:
@@ -374,13 +426,153 @@ class DataLoader:
         image = Image.new("RGBA", (96, 96), "#1E2A3A")
         image.save(self.placeholder_path)
 
-    def _fetch_remote_champions(self) -> dict | None:
+    def _sync_runtime_synergy_file(self) -> None:
+        if not self.bundle_synergy_path.exists():
+            return
+
+        bundle_meta, bundle_champions = _load_synergy_payload(self.bundle_synergy_path)
+        runtime_meta, runtime_champions = _load_synergy_payload(self.synergy_path) if self.synergy_path.exists() else ({}, {})
+        merged_meta = dict(bundle_meta)
+        if runtime_meta:
+            merged_meta.update(runtime_meta)
+        if not merged_meta:
+            merged_meta = {
+                "patch": "unknown",
+                "source": "embedded",
+                "updated_at": "",
+            }
+        merged_champions = dict(bundle_champions)
+        for champion_name, runtime_record in runtime_champions.items():
+            bundle_record = merged_champions.get(champion_name, {})
+            if isinstance(bundle_record, dict):
+                merged_champions[champion_name] = {**bundle_record, **runtime_record}
+            else:
+                merged_champions[champion_name] = runtime_record
+        self._write_synergy_payload(self.synergy_path, merged_meta, dict(sorted(merged_champions.items())))
+
+    def _update_runtime_synergy_meta(self, patch: str) -> None:
+        meta, champions = _load_synergy_payload(self.synergy_path)
+        next_meta = dict(meta)
+        next_meta.update({
+            "patch": patch,
+            "source": "runtime-auto",
+            "updated_at": date.today().isoformat(),
+        })
+        self._write_synergy_payload(self.synergy_path, next_meta, champions)
+
+    def _write_synergy_payload(self, target: Path, meta: dict, champions: dict[str, dict]) -> None:
+        payload = {"_meta": meta}
+        payload.update(champions)
+        target.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def get_tag_catalog(self) -> dict[str, list[str]]:
+        _, champions = _load_synergy_payload(self.synergy_path)
+        ability_tags = sorted(
+            {
+                str(tag).strip().upper()
+                for payload in champions.values()
+                if isinstance(payload, dict)
+                for tag in payload.get("ability_tags", [])
+                if str(tag).strip()
+            }
+        )
+        general_tags = sorted(
+            {
+                str(tag).strip()
+                for payload in champions.values()
+                if isinstance(payload, dict)
+                for tag in payload.get("tags", [])
+                if str(tag).strip()
+            },
+            key=str.casefold,
+        )
+        return {
+            "ability_tags": ability_tags,
+            "tags": general_tags,
+        }
+
+    def update_champion_configuration(
+        self,
+        champion_name: str,
+        *,
+        roles: list[str] | None = None,
+        ability_tags: list[str] | None = None,
+        tags: list[str] | None = None,
+    ) -> dict:
+        meta, champions = _load_synergy_payload(self.synergy_path)
+        current = dict(champions.get(champion_name, {}))
+        if not current:
+            current = self._normalize_runtime_record(
+                champion_name,
+                {},
+                champion_name.replace(" ", "").replace("'", "").replace(".", ""),
+                roles=roles or ["TOP", "JUNGLE", "MID", "ADC", "SUPPORT"],
+            )
+
+        resolved_roles = current.get("roles") or roles or ["TOP", "JUNGLE", "MID", "ADC", "SUPPORT"]
+        if roles is not None:
+            resolved_roles = _dedupe_preserve_order(
+                [str(role).strip().upper() for role in roles if str(role).strip()]
+            ) or ["TOP", "JUNGLE", "MID", "ADC", "SUPPORT"]
+            current["roles"] = resolved_roles
+
+        if ability_tags is not None:
+            current["ability_tags"] = _dedupe_preserve_order(
+                [str(tag).strip().upper() for tag in ability_tags if str(tag).strip()]
+            )
+
+        if tags is not None:
+            current["tags"] = _dedupe_preserve_order(
+                [str(tag).strip() for tag in tags if str(tag).strip()]
+            )
+
+        image_key = current.get("image_key") or champion_name.replace(" ", "").replace("'", "").replace(".", "")
+        normalized = self._normalize_runtime_record(
+            champion_name,
+            current,
+            image_key,
+            roles=resolved_roles,
+        )
+        champions[champion_name] = normalized
+
+        next_meta = dict(meta)
+        next_meta["source"] = "runtime-auto"
+        next_meta["updated_at"] = date.today().isoformat()
+        self._write_synergy_payload(self.synergy_path, next_meta, dict(sorted(champions.items())))
+        return normalized
+
+    def _register_new_champions(self, raw_payload: dict) -> None:
+        meta, champions = _load_synergy_payload(self.synergy_path)
+        next_champions = dict(champions)
+        discovered = 0
+
+        for champion_key, raw_info in raw_payload.get("data", {}).items():
+            champion_name = raw_info.get("name", champion_key)
+            if champion_name in next_champions:
+                continue
+            roles = DEFAULT_ROLE_MAP.get(champion_name, ["TOP", "JUNGLE", "MID", "ADC", "SUPPORT"])
+            image_key = raw_info.get("id", champion_key)
+            next_champions[champion_name] = self._normalize_runtime_record(
+                champion_name,
+                {},
+                image_key,
+                roles=roles,
+            )
+            discovered += 1
+
+        if discovered == 0:
+            return
+
+        next_meta = dict(meta)
+        next_meta["source"] = "runtime-auto"
+        next_meta["updated_at"] = date.today().isoformat()
+        next_meta["auto_registered_count"] = int(next_meta.get("auto_registered_count", 0)) + discovered
+        self._write_synergy_payload(self.synergy_path, next_meta, dict(sorted(next_champions.items())))
+
+    def _fetch_remote_champions(self, patch: str) -> dict | None:
         try:
-            patch = get_current_patch()
             champion_list_url = f"https://ddragon.leagueoflegends.com/cdn/{patch}/data/en_US/champion.json"
-            response = requests.get(champion_list_url, timeout=15)
-            response.raise_for_status()
-            payload = response.json()
+            payload = _http_get_json(champion_list_url, timeout=15)
             self.raw_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
             return payload
         except Exception:
@@ -625,9 +817,7 @@ class DataLoader:
 
         for attempt in range(3):
             try:
-                response = requests.get(url, timeout=15)
-                response.raise_for_status()
-                target_path.write_bytes(response.content)
+                target_path.write_bytes(_http_get_bytes(url, timeout=15))
                 time.sleep(IMAGE_DOWNLOAD_DELAY_SECONDS)
                 return
             except Exception:

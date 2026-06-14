@@ -66,9 +66,11 @@ class MatchupMode(QWidget):
             """
         )
         main.addWidget(role_label)
+        role_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         role_row = QHBoxLayout()
         role_row.setSpacing(10)
+        role_row.addStretch()
         self.role_btns: list[LargeRoleButton] = []
         for cfg in ROLE_CONFIG:
             button = LargeRoleButton(cfg)

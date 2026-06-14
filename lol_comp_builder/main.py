@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
@@ -8,6 +9,7 @@ from PyQt6.QtGui import QFont, QFontDatabase, QIcon
 from PyQt6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QProgressBar, QVBoxLayout
 
 from logic.data_loader import DataLoader
+from logic.ollama_client import OllamaClient
 from ui.main_window import MainWindow
 
 
@@ -84,7 +86,8 @@ def build_stylesheet() -> str:
         color: #C9A84C;
         font-size: 22px;
         font-weight: 800;
-        letter-spacing: 0.5px;
+        font-family: 'Cinzel', 'Trajan Pro', 'Georgia';
+        letter-spacing: 1.2px;
         padding-left: 4px;
     }
     QLabel#SectionTitle {
@@ -166,6 +169,17 @@ def build_stylesheet() -> str:
         background: transparent;
     }
     """
+
+
+def start_ollama_background() -> None:
+    """Inicia Ollama en segundo plano al abrir CompMaker si está instalado."""
+    def worker() -> None:
+        try:
+            OllamaClient().ensure_server_ready(autostart=True)
+        except Exception:
+            pass
+
+    threading.Thread(target=worker, daemon=True).start()
 
 
 class DataLoadWorker(QObject):
@@ -251,6 +265,7 @@ def main() -> int:
         )
         return 1
 
+    start_ollama_background()
     window = MainWindow(loading_dialog.result_bundle, loader)
     window.show()
     return app.exec()

@@ -11,6 +11,7 @@ FONTS = {
     "BarlowCondensed-ExtraBold.ttf": "https://github.com/jpt/barlow/raw/master/fonts/ttf/BarlowCondensed-ExtraBold.ttf",
     "JetBrainsMono-Regular.ttf": "https://github.com/JetBrains/JetBrainsMono/raw/master/fonts/ttf/JetBrainsMono-Regular.ttf",
     "JetBrainsMono-Bold.ttf": "https://github.com/JetBrains/JetBrainsMono/raw/master/fonts/ttf/JetBrainsMono-Bold.ttf",
+    "Cinzel[wght].ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/cinzel/Cinzel%5Bwght%5D.ttf",
 }
 
 
