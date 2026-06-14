@@ -98,4 +98,7 @@ python -m pytest lol_comp_builder\tests\test_itemizar_meta_and_models.py -q
 - Build meta y runas visibles en UI
 - Context cache por parche y por campeon/rol
 - Setup de Windows versionado en la carpeta `Installer`
+<<<<<<< HEAD
 
+=======
+>>>>>>> 60c9794db3efb0140ec34ac6ee380f9b73753b24
